@@ -1,5 +1,9 @@
 # Hysteresis v0.1.0
 
+## Installation
+_**Disclaimer:** this plugin will only work on 64-bit windows machines!_ \
+Download the `.dll` file in the `/bin` directory and place it into your VST folder.
+
 # What is Hysteresis?
 
 Hysteresis is a tape emulation plugin that models the physical characteristics of ferro-magnetic tape. At its core is a standard hyperbolic tangent saturator, but on top of that it has a few nifty features.
