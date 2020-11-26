@@ -2,7 +2,10 @@
 
 ## Installation
 _**Disclaimer:** this plugin will only work on 64-bit windows machines!_ \
-Download the `.dll` file in the `/bin` directory and place it into your VST folder.
+Download the `.dll` file in the `bin/` directory and place it into your DAW's VST folder.
+
+## Compiling The Source Code
+Make sure you have Cargo installed on your computer (the Rust compiler). Then in the root of the repository run `cargo build`. Once Cargo is done building, there should be a `hysteresis.dll` file in the newly created `debug/` directory. Place this file into your DAW's VST folder.
 
 # What is Hysteresis?
 
