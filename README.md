@@ -16,6 +16,8 @@ The signal entering the saturator is first integrated with a "hysteresis" functi
 
 On top of that, the plugin models the tape hiss, not just by adding a boring noise floor, but by emulating the quantum phenomena that make this hiss arise in the real thing. (if you hate hiss, you can turn this off). The phenomena behind this is "stochastic quantization". Essentially the way the tape is magnetized is not in a continuous fashion but through a stepped function with discrete (yet randomly spaced) steps (quanta).
 
+![Transfer Function Example](transfer_function_example.png) \
+This is an example of what the saturation and hysteresis transfer function might look like in any given moment. Notice that the curve in the middle splits up, this is what the hysteresis does. When the wave is going up, the lower edge of the curve is followed, whereas when the wave is going down, the upper edge is followed.
 # Controls Explained
 
 - Pre-gain: gain applied before distortion, useful to drive the saturator.
