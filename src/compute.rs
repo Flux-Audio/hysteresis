@@ -4,7 +4,7 @@ use rand_xoshiro::Xoshiro256Plus;
 use rand_xoshiro::rand_core::RngCore;
 
 /// simple RT derivative approximation
-pub fn diff(x: f32, x_p: f32, T:f32) -> f32{ return (x - x_p)/T; }
+pub fn diff(x: f32, x_p: f32, rate:f32) -> f32{ return (x - x_p)/rate; }
 
 
 // === BIAS FUNCTION ===========================================================
@@ -21,7 +21,7 @@ pub fn tube_bias(x: f32, bias: f32) -> f32{
 /// + x     input
 /// + amt   amount
 /// + w     width
-pub fn digi_xover(x: f32, amt: f32, w: f32) -> f32{
+pub fn digital_xover(x: f32, amt: f32, w: f32) -> f32{
     return x - (if x.abs() < w { 
         x/(amt.atanh() + 1.0) 
     } else {
@@ -130,7 +130,7 @@ pub fn soft_clip(x: f32) -> f32{
 }
 
 /// tube saturation
-pub fn tupe_sat(x: f32) -> f32{
+pub fn tube_sat(x: f32) -> f32{
     let tg = (1.4549654*x).tan()/4.0;
     let sat = (1.4549654*x).tanh();
     let fade = if x.abs() > 1.28741055 { 1.0 } else { 1.0/1.28741055*x.abs() };

@@ -1,6 +1,6 @@
 [package]
-name = "hysteresis"
-version = "0.1.0"
+name = "HYSTERESIS"
+version = "0.2.0"
 authors = ["Lorenzo Panieri <panierilorenzo@gmail.com>"]
 edition = "2018"
 
@@ -11,5 +11,5 @@ vst = "0.2.1"
 rand_xoshiro = "0.4.0"
 
 [lib]
-name = "hysteresis"
+name = "HYSTERESIS"
 crate-type = ["cdylib"]
