@@ -1,5 +1,6 @@
 // VST bindings.
 
+#![feature(tau_constant)]
 #[macro_use]
 extern crate vst;
 extern crate rand_xoshiro;
@@ -10,11 +11,18 @@ use vst::util::AtomicFloat;
 
 use rand_xoshiro::rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256Plus;
+use rand_xoshiro::rand_core::RngCore;
 
 use std::sync::Arc;
 use std::collections::VecDeque;
+use std::f32::consts;
 
 mod compute; // contains processing functions
+
+const MOD_RATE: f32 = 0.23;
+const LP_1_CUT: f32 = 15.0;
+const HP_1_CUT: f32 = 2.5;
+const HP_2_CUT: f32 = 500.0;
 
 // Plugin struct, this is where the processing happens
 struct Effect {
@@ -35,6 +43,18 @@ struct Effect {
     xr_e_z1: f32,
     yl_z1: f32,
     yr_z1: f32,
+
+    // oscillator accumulators
+    ramp_1: f32,
+    ramp_2: f32,
+    ramp_mod: f32,
+
+    // filter memory cells
+    lp_1_z1: f32,
+    lp_1_z2: f32,
+    flut_z1: f32,
+    hp_1_z1: f32,
+    hp_2_z1: f32,
 
     // audio buffers
     dly_line_l: VecDeque<f32>,
@@ -81,6 +101,16 @@ impl Default for Effect {
             xr_e_z1: 0.0,
             yl_z1: 0.0,
             yr_z1: 0.0,
+
+            ramp_1: 0.0,
+            ramp_2: 0.0,
+            ramp_mod: 0.0,
+
+            lp_1_z1: 0.0,
+            lp_1_z2: 0.0,
+            flut_z1: 0.0,
+            hp_1_z1: 0.0,
+            hp_2_z1: 0.0,
 
             dly_line_l: VecDeque::from(vec![0.0; 4410]),
             dly_line_r: VecDeque::from(vec![0.0; 4410]),
@@ -151,10 +181,12 @@ impl Plugin for Effect {
             let quantum = self.params.quantum.get();
             //let xo_amt = self.params.cross_amt.get().sqrt().sqrt().sqrt().sqrt().sqrt().sqrt().sqrt().sqrt();
             let erase = (1.0 - self.params.cross_amt.get()*0.999).powf(2.0);
-            let xo_w = self.params.cross_width.get();
+            let xo_w = self.params.cross_width.get().powf(3.0);
             let bias = self.params.bias.get()*2.0 - 1.0;
             let drive = (5.0*self.params.drive.get().powf(2.0)).exp()*0.5;
             let post_gain = self.params.post_gain.get()*2.0;  // TODO: re-scale
+            let wow = self.params.bias_mode.get().powf(2.0);
+            let flut_amt = self.params.hyst_amt.get();
 
             // === hysteresis ==================================================
             let mut xl = *left_in + bias;
@@ -175,21 +207,77 @@ impl Plugin for Effect {
             xl = compute::mag_sat_4(xl*drive)/compute::mag_sat_4(drive) - compute::mag_sat_4(bias*drive)/compute::mag_sat_4(drive);
             xr = compute::mag_sat_4(xr*drive)/compute::mag_sat_4(drive) - compute::mag_sat_4(bias*drive)/compute::mag_sat_4(drive);
 
-            // TODO: / XXX: might not actually do the compression in this release
+            // TODO: voltage-drop compression (planned ver 0.3)
 
             // === wow / flutter ===============================================
+            // modulating oscillator, used to vary the speed of the two other
+            // oscillators. A phasor ramp is generated, it is wrapped between
+            // 0 and TAU radians. Then a sine wave is produced by taking the sin
+            // of the phasor. The same applies for all other oscillators.
+            self.ramp_mod = if self.ramp_mod > std::f32::consts::TAU {
+                0.0
+            } else {
+                self.ramp_mod + consts::TAU*(MOD_RATE/self.sr)
+            };
+            let sine_mod = self.ramp_mod.sin()*0.5 + 0.5;   // make positive
+
+            // osc 1
+            // frequency of osc 1 varies between 0 Hz and 0.9 Hz
+            let rate_1 = 0.9*sine_mod;
+            self.ramp_1 = if self.ramp_1 > std::f32::consts::TAU {
+                0.0
+            } else {
+                self.ramp_1 + consts::TAU*(rate_1/self.sr)
+            };
+            let sine_1 = self.ramp_1.sin()*0.1;
+
+            // osc 2
+            // frequency of osc 2 varies between 0.35 Hz and 1.35 Hz
+            let rate_2 = 1.0*(1.0 - sine_mod) + 0.35;
+            self.ramp_2 = if self.ramp_2 > std::f32::consts::TAU {
+                0.0
+            } else {
+                self.ramp_2 + consts::TAU*(rate_2/self.sr)
+            };
+            let sine_2 = self.ramp_2.sin()*0.1;
+
+            // flutter
+            // filtered with a second order lowpass filter at 35 Hz in series with
+            // a high pass filter at 8 Hz
+            // and in parallel with a high pass filter at 500 Hz
+            let omega_1 = (-consts::TAU*(LP_1_CUT/self.sr)).exp();
+            let omega_2 = (-consts::TAU*(HP_1_CUT/self.sr)).exp();
+            let omega_3 = (-consts::TAU*(HP_2_CUT/self.sr)).exp();
+            let mut flutter = (self.rng.next_u64() as f32) / (u64::MAX as f32);
+            // LP at 35 Hz
+            let flutter_lp = (1.0 - omega_1).powf(2.0)*flutter + 2.0*omega_1*self.lp_1_z1 - omega_1.powf(2.0)*self.lp_1_z2;
+            // HP at 8 Hz
+            let flutter_hp_1 = (1.0 + omega_2)/2.0*flutter_lp - (1.0 + omega_2)/2.0*self.lp_1_z1 + omega_2*self.hp_1_z1;
+            // HP at 500 Hz
+            let flutter_hp_2 = (1.0 + omega_3)/2.0*flutter - (1.0 + omega_3)/2.0*self.flut_z1 + omega_3*self.hp_2_z1;
+            self.lp_1_z2 = self.lp_1_z1;
+            self.lp_1_z1 = flutter_lp;
+            self.flut_z1 = flutter;
+            self.hp_1_z1 = flutter_hp_1;
+            self.hp_2_z1 = flutter_hp_2;
+            flutter = flutter_hp_1*16.0 + flutter_hp_2*0.00; // FIXME: maybe add hp 2 after intersample interpolation is introduced
+            flutter = flutter*flutter*flutter;
+
+
+
+            // add together mod sources (mod is a reserved keyword)
+            let my_mod = 1.0 + (sine_1 + sine_2)*wow + flutter*flut_amt;
+
+
             // TODO: add option to bypass time effects to remove latency
             // TODO: do the actual modulation
-
-            /*
-            let md = 0.0;
             self.dly_line_l.push_back(xl);
             self.dly_line_r.push_back(xr);
             self.dly_line_l.pop_front();
             self.dly_line_r.pop_front();
-            xl = *self.dly_line_l.get(2205 + md).unwrap();
-            xr = *self.dly_line_r.get(2205 + md).unwrap();
-            */
+            // TODO: intersample interpolation (planned ver 0.3)
+            xl = *self.dly_line_l.get((2205.0*my_mod) as usize).unwrap();
+            xr = *self.dly_line_r.get((2205.0*my_mod) as usize).unwrap();
 
             // === self-erasure ================================================
             xl = self.xl_e_z1 + ((xl - self.xl_e_z1)/erase).tanh()*erase;
@@ -198,8 +286,9 @@ impl Plugin for Effect {
             self.xr_e_z1 = xr;
 
             // === dc-decouple =================================================
-            xl = xl - self.yl_z1*0.01;
-            xr = xr - self.yr_z1*0.01;
+            // essentially just a high pass filter at 5Hz
+            xl = xl - self.yl_z1*0.25;
+            xr = xr - self.yr_z1*0.25;
             self.yl_z1 = xl;
             self.yr_z1 = xr;
 
@@ -207,7 +296,7 @@ impl Plugin for Effect {
             *right_out = xr*post_gain;
 
             // === dropouts ====================================================
-            // TODO:
+            // TODO: (planned ver 0.3)
         }
     }
 
