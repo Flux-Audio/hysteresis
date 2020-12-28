@@ -55,6 +55,17 @@ pub fn analog_xover(x: f32, amt: f32, w: f32) -> f32{
 // === HYSTERESIS ==============================================================
 
 // === SATURATION FUNCTION =====================================================
+/// soft saturation
+pub fn soft_sat_1(x: f32) -> f32{
+    let sat_1 = if x < -1.4 {
+        0.169967143*(x + 1.4) - 0.98544972998
+    } else if x > 1.4 {
+        0.169967143*(x - 1.4) + 0.98544972998
+    } else {
+        x.sin()
+    };
+    return (sat_1*0.8).tanh();
+}
 
 /// tungsten magnetic saturation
 pub fn mag_sat_1 (x: f32) -> f32 { (x*x*x*1.6 + x*0.4).tanh() }

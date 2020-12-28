@@ -63,24 +63,23 @@ struct Effect {
     // audio buffers
     dly_line_l: VecDeque<f32>,
     dly_line_r: VecDeque<f32>,
+    dry_line_l: VecDeque<f32>,
+    dry_line_r: VecDeque<f32>,
 }
 
 // Plugin parameters, this is where the UI happens
 struct EffectParameters {
     pre_gain: AtomicFloat,
-    drive: AtomicFloat,
     bias: AtomicFloat,
-    bias_mode: AtomicFloat,
-    cross_amt: AtomicFloat,
-    cross_width: AtomicFloat,
-    cross_mode: AtomicFloat,
-    hyst_amt: AtomicFloat,
-    hyst_param: AtomicFloat,
-    hyst_mode: AtomicFloat,
-    sat_mode: AtomicFloat,
+    hysteresis: AtomicFloat,
+    mode: AtomicFloat,
+    drive: AtomicFloat,
     quantum: AtomicFloat,
+    wow: AtomicFloat,
+    flutter: AtomicFloat,
+    erase: AtomicFloat,
+    hiss: AtomicFloat,
     dry_wet: AtomicFloat,
-    cut: AtomicFloat,
     post_gain: AtomicFloat,
 }
 
@@ -122,6 +121,8 @@ impl Default for Effect {
 
             dly_line_l: VecDeque::from(vec![0.0; 4410]),
             dly_line_r: VecDeque::from(vec![0.0; 4410]),
+            dry_line_l: VecDeque::from(vec![0.0; 2205]),
+            dry_line_r: VecDeque::from(vec![0.0; 2205]),
         }
     }
 }
@@ -129,21 +130,18 @@ impl Default for Effect {
 impl Default for EffectParameters {
     fn default() -> EffectParameters {
         EffectParameters {
-            pre_gain: AtomicFloat::new(0.5),    // map -60 dB - +18 dB   c: 0 dB
-            drive: AtomicFloat::new(0.0),       // map 0.1 - 5.0
-            bias: AtomicFloat::new(0.5),        // map -1 - +1
-            bias_mode: AtomicFloat::new(0.0),   // map enum{tape, tube}
-            cross_amt: AtomicFloat::new(0.0),
-            cross_width: AtomicFloat::new(0.0),
-            cross_mode: AtomicFloat::new(0.0),  // map enum{digital, analog}
-            hyst_amt: AtomicFloat::new(0.0),
-            hyst_param: AtomicFloat::new(0.5),
-            hyst_mode: AtomicFloat::new(0.0),   // map enum{digi, tape1, tape2, tube},
-            sat_mode: AtomicFloat::new(0.0),    // map enum{tape1, tape2, clip, tube},
+            pre_gain: AtomicFloat::new(0.5),
+            bias: AtomicFloat::new(0.5),
+            hysteresis: AtomicFloat::new(0.0),
+            mode: AtomicFloat::new(0.0),
+            drive: AtomicFloat::new(0.0),
             quantum: AtomicFloat::new(0.0),
-            dry_wet: AtomicFloat::new(0.0),
-            cut: AtomicFloat::new(0.0),
-            post_gain: AtomicFloat::new(0.5),   // map -60 dB - +6 dB    c: 0 dB
+            wow: AtomicFloat::new(0.0),
+            flutter: AtomicFloat::new(0.0),
+            erase: AtomicFloat::new(0.0),
+            hiss: AtomicFloat::new(0.0),
+            dry_wet: AtomicFloat::new(1.0),
+            post_gain: AtomicFloat::new(0.70710678),
         }
     }
 }
@@ -161,8 +159,9 @@ impl Plugin for Effect {
             outputs: 2,
             // This `parameters` bit is important; without it, none of our
             // parameters will be shown!
-            parameters: 15,
+            parameters: 12,
             category: Category::Effect,
+            initial_delay: 2205,
             ..Default::default()
         }
     }
@@ -187,21 +186,26 @@ impl Plugin for Effect {
         // process
         for ((left_in, right_in), (left_out, right_out)) in stereo_in.zip(stereo_out) {
             let quantum = self.params.quantum.get();
-            //let xo_amt = self.params.cross_amt.get().sqrt().sqrt().sqrt().sqrt().sqrt().sqrt().sqrt().sqrt();
-            let erase = (1.0 - self.params.cross_amt.get()*0.999).powf(2.0);
-            let xo_w = self.params.cross_width.get().powf(3.0);
+            let erase = (1.0 - self.params.erase.get()*0.999).powf(2.0);
+            let hyst = self.params.hysteresis.get().powf(3.0);
             let bias = self.params.bias.get()*2.0 - 1.0;
             let drive = (5.0*self.params.drive.get().powf(2.0)).exp()*0.5;
-            let pre_gain = self.params.pre_gain.get()*2.0;    // TODO: re-scale
-            let post_gain = self.params.post_gain.get()*2.0;  // TODO: re-scale
-            let wow = self.params.bias_mode.get().powf(2.0);
-            let flut_amt = self.params.hyst_amt.get().powf(2.0);
-            let hiss = self.params.cross_mode.get().powf(3.0);
+            let pre_gain = (self.params.pre_gain.get()*2.0).powf(2.0);
+            let post_gain = self.params.post_gain.get().powf(2.0)*2.0;
+            let wow = self.params.wow.get().powf(2.0);
+            let flut_amt = self.params.flutter.get().powf(2.0);
+            let hiss = self.params.hiss.get().powf(3.0);
+            let mode = (self.params.mode.get()*5.0 + 0.5) as u8;
+            let dry = 1.0 - self.params.dry_wet.get();
+            let wet = self.params.dry_wet.get();
 
-
-            // === pre-gain
+            // === pre-gain ====================================================
             let mut xl = *left_in*pre_gain + bias;
             let mut xr = *right_in*pre_gain + bias;
+
+            // === store dry signal ============================================
+            self.dry_line_l.push_back(xl);
+            self.dry_line_r.push_back(xr);
 
             // === recording noise =============================================
             let mut rec_nse_l = (self.rng.next_u64() as f32) / (u64::MAX as f32);
@@ -215,8 +219,8 @@ impl Plugin for Effect {
             xr += rec_nse_r*hiss*0.01;
 
             // === hysteresis ==================================================
-            xl = self.xl_h_z1 + compute::analog_xover(xl - self.xl_h_z1, 0.99975, xo_w);
-            xr = self.xr_h_z1 + compute::analog_xover(xr - self.xr_h_z1, 0.99975, xo_w);
+            xl = self.xl_h_z1 + compute::analog_xover(xl - self.xl_h_z1, 0.99975, hyst);
+            xr = self.xr_h_z1 + compute::analog_xover(xr - self.xr_h_z1, 0.99975, hyst);
             self.xl_h_z1 = xl;
             self.xr_h_z1 = xr;
 
@@ -227,8 +231,34 @@ impl Plugin for Effect {
             self.xr_q_z1 = xr;
 
             // === saturation ==================================================
-            xl = compute::mag_sat_4(xl*drive)/compute::mag_sat_4(drive) - compute::mag_sat_4(bias*drive)/compute::mag_sat_4(drive);
-            xr = compute::mag_sat_4(xr*drive)/compute::mag_sat_4(drive) - compute::mag_sat_4(bias*drive)/compute::mag_sat_4(drive);
+            match mode{
+                0 => {
+                    xl = compute::soft_sat_1(xl*drive)/compute::soft_sat_1(drive) - compute::soft_sat_1(bias*drive)/compute::soft_sat_1(drive);
+                    xr = compute::soft_sat_1(xr*drive)/compute::soft_sat_1(drive) - compute::soft_sat_1(bias*drive)/compute::soft_sat_1(drive);
+                },
+                1 => {
+                    xl = compute::mag_sat_1(xl*drive)/compute::mag_sat_1(drive) - compute::mag_sat_1(bias*drive)/compute::mag_sat_1(drive);
+                    xr = compute::mag_sat_1(xr*drive)/compute::mag_sat_1(drive) - compute::mag_sat_1(bias*drive)/compute::mag_sat_1(drive);
+                },
+                2 => {
+                    xl = compute::mag_sat_2(xl*drive)/compute::mag_sat_2(drive) - compute::mag_sat_2(bias*drive)/compute::mag_sat_2(drive);
+                    xr = compute::mag_sat_2(xr*drive)/compute::mag_sat_2(drive) - compute::mag_sat_2(bias*drive)/compute::mag_sat_2(drive);
+                },
+                3 => {
+                    xl = compute::mag_sat_3(xl*drive)/compute::mag_sat_3(drive) - compute::mag_sat_3(bias*drive)/compute::mag_sat_3(drive);
+                    xr = compute::mag_sat_3(xr*drive)/compute::mag_sat_3(drive) - compute::mag_sat_3(bias*drive)/compute::mag_sat_3(drive);
+                }
+                4 => {
+                    xl = compute::mag_sat_4(xl*drive)/compute::mag_sat_4(drive) - compute::mag_sat_4(bias*drive)/compute::mag_sat_4(drive);
+                    xr = compute::mag_sat_4(xr*drive)/compute::mag_sat_4(drive) - compute::mag_sat_4(bias*drive)/compute::mag_sat_4(drive);
+                },
+                5 => {
+                    xl = compute::mag_sat_4(xl*drive)/compute::mag_sat_5(drive) - compute::mag_sat_5(bias*drive)/compute::mag_sat_5(drive);
+                    xr = compute::mag_sat_4(xr*drive)/compute::mag_sat_5(drive) - compute::mag_sat_5(bias*drive)/compute::mag_sat_5(drive);
+                }
+                _ => (),
+            }
+            
 
             // TODO: voltage-drop compression (planned ver 0.3)
 
@@ -296,8 +326,6 @@ impl Plugin for Effect {
             flutter = flutter_hp_1*16.0 + flutter_hp_2*0.00; // FIXME: maybe add hp 2 after intersample interpolation is introduced
             flutter = flutter*flutter*flutter;
 
-
-
             // add together mod sources (mod is a reserved keyword)
             let my_mod = 1.0 + (sine_1 + sine_2)*wow + flutter*flut_amt;
 
@@ -344,6 +372,11 @@ impl Plugin for Effect {
             self.yl_z1 = xl;
             self.yr_z1 = xr;
 
+            // === dry / wet ===================================================
+            xl = xl*wet + self.dry_line_l.pop_front().unwrap()*dry;
+            xr = xr*wet + self.dry_line_r.pop_front().unwrap()*dry;
+
+            // === out =========================================================
             *left_out = xl*post_gain;
             *right_out = xr*post_gain;
 
@@ -364,20 +397,17 @@ impl PluginParameters for EffectParameters {
     fn get_parameter(&self, index: i32) -> f32 {
         match index {
             0 => self.pre_gain.get(),
-            1 => self.drive.get(),
-            2 => self.bias.get(),
-            3 => self.bias_mode.get(),
-            4 => self.cross_amt.get(),
-            5 => self.cross_width.get(),
-            6 => self.cross_mode.get(),
-            7 => self.hyst_amt.get(),
-            8 => self.hyst_param.get(),
-            9 => self.hyst_mode.get(),
-            10 => self.sat_mode.get(),
-            11 => self.quantum.get(),
-            12 => self.dry_wet.get(),
-            13 => self.cut.get(),
-            14 => self.post_gain.get(),
+            1 => self.bias.get(),
+            2 => self.hysteresis.get(),
+            3 => self.mode.get(),
+            4 => self.drive.get(),
+            5 => self.quantum.get(),
+            6 => self.wow.get(),
+            7 => self.flutter.get(),
+            8 => self.erase.get(),
+            9 => self.hiss.get(),
+            10 => self.dry_wet.get(),
+            11 => self.post_gain.get(),
             _ => 0.0,
         }
     }
@@ -387,20 +417,17 @@ impl PluginParameters for EffectParameters {
         #[allow(clippy::single_match)]
         match index {
             0 => self.pre_gain.set(val),
-            1 => self.drive.set(val),
-            2 => self.bias.set(val),
-            3 => self.bias_mode.set(val),
-            4 => self.cross_amt.set(val),
-            5 => self.cross_width.set(val),
-            6 => self.cross_mode.set(val),
-            7 => self.hyst_amt.set(val),
-            8 => self.hyst_param.set(val),
-            9 => self.hyst_mode.set(val),
-            10 => self.sat_mode.set(val),
-            11 => self.quantum.set(val),
-            12 => self.dry_wet.set(val),
-            13 => self.cut.set(val),
-            14 => self.post_gain.set(val),
+            1 => self.bias.set(val),
+            2 => self.hysteresis.set(val),
+            3 => self.mode.set(val),
+            4 => self.drive.set(val),
+            5 => self.quantum.set(val),
+            6 => self.wow.set(val),
+            7 => self.flutter.set(val),
+            8 => self.erase.set(val),
+            9 => self.hiss.set(val),
+            10 => self.dry_wet.set(val),
+            11 => self.post_gain.set(val),
             _ => (),
         }
     }
@@ -409,21 +436,26 @@ impl PluginParameters for EffectParameters {
     // format it into a string that makes the most since.
     fn get_parameter_text(&self, index: i32) -> String {
         match index {
-            0 => format!("{:.2}", (self.pre_gain.get()*2.0)), // TODO: dB
-            1 => format!("{:.2}", (self.drive.get())),
-            2 => format!("{:.2}", (self.bias.get())),
-            3 => format!("{:.2}", (self.bias_mode.get())),
-            4 => format!("{:.2}", (self.cross_amt.get())),
-            5 => format!("{:.2}", (self.cross_width.get())),
-            6 => format!("{:.2}", (self.cross_mode.get())),
-            7 => format!("{:.2}", (self.hyst_amt.get())),
-            8 => format!("{:.2}", (self.hyst_param.get())),
-            9 => format!("{:.2}", (self.hyst_mode.get())),
-            10 => format!("{:.2}", (self.sat_mode.get())),
-            11 => format!("{:.2}", (self.quantum.get())),
-            12 => format!("{:.2}", (self.dry_wet.get())),
-            13 => format!("{:.2}", (self.cut.get())),
-            14 => format!("{:.2}", (self.post_gain.get())),
+            0 => format!("{:.2} dB", (self.pre_gain.get()*2.0).powf(2.0).log10()*20.0 ),
+            1 => format!("{:.2}", (self.bias.get())),
+            2 => format!("{:.2}", (self.hysteresis.get())),
+            3 => match (self.mode.get()*5.0 + 0.5) as u8{
+                0 => String::from("soft"),
+                1 => String::from("tungsten"),
+                2 => String::from("steel"),
+                3 => String::from("iron"),
+                4 => String::from("nickel"),
+                5 => String::from("magnetite"),
+                _ => String::new(),
+            },
+            4 => format!("{:.2}", (self.drive.get())),
+            5 => format!("{:.2}", (self.quantum.get())),
+            6 => format!("{:.2}", (self.wow.get())),
+            7 => format!("{:.2}", (self.flutter.get())),
+            8 => format!("{:.2}", (self.erase.get())),
+            9 => format!("{:.2}", (self.hiss.get())),
+            10 => format!("{:.2}", self.dry_wet.get()),
+            11 => format!("{:.2} dB", (self.post_gain.get().powf(2.0)*2.0).log10()*20.0 ),
             _ => "".to_string(),
         }
     }
@@ -431,21 +463,18 @@ impl PluginParameters for EffectParameters {
     // This shows the control's name.
     fn get_parameter_name(&self, index: i32) -> String {
         match index {
-            0 => "Pre-gain",
-            1 => "Drive",
-            2 => "Bias",
-            3 => "Bias Mode",
-            4 => "Crossover",
-            5 => "Cross. Width",
-            6 => "Cross. Mode",
-            7 => "Hysteresis",
-            8 => "Hyst. Warp",
-            9 => "Hyst. Mode",
-            10 => "Saturation",
-            11 => "Quantum",
-            12 => "Dry / Wet",
-            13 => "Post-EQ",
-            14 => "Post-gain",
+            0 => "pre-gain",
+            1 => "bias",
+            2 => "hysteresis",
+            3 => "sat. mode",
+            4 => "drive",
+            5 => "quantum",
+            6 => "wow",
+            7 => "flutter",
+            8 => "erase",
+            9 => "hiss",
+            10 => "dry / wet",
+            11 => "post-gain",
             _ => "",
         }
         .to_string()
