@@ -12,6 +12,7 @@ use rand_xoshiro::rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256Plus;
 
 use std::sync::Arc;
+use std::collections::VecDeque;
 
 mod compute; // contains processing functions
 
@@ -30,6 +31,14 @@ struct Effect {
     xr_q_z1: f32,
     xl_h_z1: f32,
     xr_h_z1: f32,
+    xl_e_z1: f32,
+    xr_e_z1: f32,
+    yl_z1: f32,
+    yr_z1: f32,
+
+    // audio buffers
+    dly_line_l: VecDeque<f32>,
+    dly_line_r: VecDeque<f32>,
 }
 
 // Plugin parameters, this is where the UI happens
@@ -68,6 +77,13 @@ impl Default for Effect {
             xr_q_z1: 0.0,
             xl_h_z1: 0.0,
             xr_h_z1: 0.0,
+            xl_e_z1: 0.0,
+            xr_e_z1: 0.0,
+            yl_z1: 0.0,
+            yr_z1: 0.0,
+
+            dly_line_l: VecDeque::from(vec![0.0; 4410]),
+            dly_line_r: VecDeque::from(vec![0.0; 4410]),
         }
     }
 }
@@ -77,7 +93,7 @@ impl Default for EffectParameters {
         EffectParameters {
             pre_gain: AtomicFloat::new(0.5),    // map -60 dB - +18 dB   c: 0 dB
             drive: AtomicFloat::new(0.0),       // map 0.1 - 5.0
-            bias: AtomicFloat::new(0.0),        // map -1 - +1
+            bias: AtomicFloat::new(0.5),        // map -1 - +1
             bias_mode: AtomicFloat::new(0.0),   // map enum{tape, tube}
             cross_amt: AtomicFloat::new(0.0),
             cross_width: AtomicFloat::new(0.0),
@@ -134,14 +150,18 @@ impl Plugin for Effect {
         for ((left_in, right_in), (left_out, right_out)) in stereo_in.zip(stereo_out) {
             let quantum = self.params.quantum.get();
             //let xo_amt = self.params.cross_amt.get().sqrt().sqrt().sqrt().sqrt().sqrt().sqrt().sqrt().sqrt();
+            let erase = (1.0 - self.params.cross_amt.get()*0.999).powf(2.0);
             let xo_w = self.params.cross_width.get();
+            let bias = self.params.bias.get()*2.0 - 1.0;
+            let drive = (5.0*self.params.drive.get().powf(2.0)).exp()*0.5;
+            let post_gain = self.params.post_gain.get()*2.0;  // TODO: re-scale
 
             // === hysteresis ==================================================
-            let mut xl = *left_in;
-            let mut xr = *right_in;
+            let mut xl = *left_in + bias;
+            let mut xr = *right_in + bias;
             
-            xl = self.xl_h_z1 + compute::analog_xover(xl - self.xl_h_z1, 0.9997, xo_w);
-            xr = self.xr_h_z1 + compute::analog_xover(xr - self.xr_h_z1, 0.9997, xo_w);
+            xl = self.xl_h_z1 + compute::analog_xover(xl - self.xl_h_z1, 0.99975, xo_w);
+            xr = self.xr_h_z1 + compute::analog_xover(xr - self.xr_h_z1, 0.99975, xo_w);
             self.xl_h_z1 = xl;
             self.xr_h_z1 = xr;
 
@@ -152,10 +172,42 @@ impl Plugin for Effect {
             self.xr_q_z1 = xr;
 
             // === saturation ==================================================
-            *left_out = compute::mag_sat_1(xl);
-            *right_out = compute::mag_sat_1(xr);
+            xl = compute::mag_sat_4(xl*drive)/compute::mag_sat_4(drive) - compute::mag_sat_4(bias*drive)/compute::mag_sat_4(drive);
+            xr = compute::mag_sat_4(xr*drive)/compute::mag_sat_4(drive) - compute::mag_sat_4(bias*drive)/compute::mag_sat_4(drive);
+
+            // TODO: / XXX: might not actually do the compression in this release
+
+            // === wow / flutter ===============================================
+            // TODO: add option to bypass time effects to remove latency
+            // TODO: do the actual modulation
+
+            /*
+            let md = 0.0;
+            self.dly_line_l.push_back(xl);
+            self.dly_line_r.push_back(xr);
+            self.dly_line_l.pop_front();
+            self.dly_line_r.pop_front();
+            xl = *self.dly_line_l.get(2205 + md).unwrap();
+            xr = *self.dly_line_r.get(2205 + md).unwrap();
+            */
 
             // === self-erasure ================================================
+            xl = self.xl_e_z1 + ((xl - self.xl_e_z1)/erase).tanh()*erase;
+            xr = self.xr_e_z1 + ((xr - self.xr_e_z1)/erase).tanh()*erase;
+            self.xl_e_z1 = xl;
+            self.xr_e_z1 = xr;
+
+            // === dc-decouple =================================================
+            xl = xl - self.yl_z1*0.01;
+            xr = xr - self.yr_z1*0.01;
+            self.yl_z1 = xl;
+            self.yr_z1 = xr;
+
+            *left_out = xl*post_gain;
+            *right_out = xr*post_gain;
+
+            // === dropouts ====================================================
+            // TODO:
         }
     }
 
