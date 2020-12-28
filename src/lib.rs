@@ -1,5 +1,6 @@
 // VST bindings.
 
+#![feature(tau_constant)]
 #[macro_use]
 extern crate vst;
 extern crate rand_xoshiro;
@@ -10,15 +11,18 @@ use vst::util::AtomicFloat;
 
 use rand_xoshiro::rand_core::SeedableRng;
 use rand_xoshiro::Xoshiro256Plus;
+use rand_xoshiro::rand_core::RngCore;
 
 use std::sync::Arc;
+use std::collections::VecDeque;
+use std::f32::consts;
 
 mod compute; // contains processing functions
 
-enum BiasMode{  TAPE,    TUBE }
-enum CrossMode{ DIGITAL, ANALOG }
-enum HystMode{  DIGITAL, TAPE1, TAPE2, TUBE }
-enum SatMode{   TAPE1,   TAPE2, CLIP,  TUBE }
+const MOD_RATE: f32 = 0.23;
+const LP_1_CUT: f32 = 15.0;
+const HP_1_CUT: f32 = 2.5;
+const HP_2_CUT: f32 = 500.0;
 
 // Plugin struct, this is where the processing happens
 struct Effect {
@@ -31,18 +35,34 @@ struct Effect {
     rate: f32,
 
     // differential variables
-    xl_p: f32,
-    xr_p: f32,
-    w_p_l_p: f32,
-    w_m_l_p: f32,
-    w_p_r_p: f32,
-    w_m_r_p: f32,
-    hyst_l_p: f32,
-    hyst_r_p: f32,
-    xl_q_p: f32,
-    xr_q_p: f32,
-    yl_p: f32,
-    yr_p: f32,
+    xl_q_z1: f32,
+    xr_q_z1: f32,
+    xl_h_z1: f32,
+    xr_h_z1: f32,
+    xl_e_z1: f32,
+    xr_e_z1: f32,
+    yl_z1: f32,
+    yr_z1: f32,
+
+    // oscillator accumulators
+    ramp_1: f32,
+    ramp_2: f32,
+    ramp_mod: f32,
+
+    // filter memory cells
+    lp_1_z1: f32,
+    lp_1_z2: f32,
+    flut_z1: f32,
+    hp_1_z1: f32,
+    hp_2_z1: f32,
+    rec_nse_l_z1: f32,
+    rec_nse_r_z1: f32,
+    play_nse_l_z1: f32,
+    play_nse_r_z1: f32,
+
+    // audio buffers
+    dly_line_l: VecDeque<f32>,
+    dly_line_r: VecDeque<f32>,
 }
 
 // Plugin parameters, this is where the UI happens
@@ -77,18 +97,31 @@ impl Default for Effect {
             sr: 44100.0,
             rate: 1.0/44100.0,
 
-            xl_p: 0.0,
-            xr_p: 0.0,
-            w_p_l_p: 0.0,
-            w_m_l_p: 0.0,
-            w_p_r_p: 0.0,
-            w_m_r_p: 0.0,
-            hyst_l_p: 0.0,
-            hyst_r_p: 0.0,
-            xl_q_p: 0.0,
-            xr_q_p: 0.0,
-            yl_p: 0.0,
-            yr_p: 0.0,
+            xl_q_z1: 0.0,
+            xr_q_z1: 0.0,
+            xl_h_z1: 0.0,
+            xr_h_z1: 0.0,
+            xl_e_z1: 0.0,
+            xr_e_z1: 0.0,
+            yl_z1: 0.0,
+            yr_z1: 0.0,
+
+            ramp_1: 0.0,
+            ramp_2: 0.0,
+            ramp_mod: 0.0,
+
+            lp_1_z1: 0.0,
+            lp_1_z2: 0.0,
+            flut_z1: 0.0,
+            hp_1_z1: 0.0,
+            hp_2_z1: 0.0,
+            rec_nse_l_z1: 0.0,
+            rec_nse_r_z1: 0.0,
+            play_nse_l_z1: 0.0,
+            play_nse_r_z1: 0.0,
+
+            dly_line_l: VecDeque::from(vec![0.0; 4410]),
+            dly_line_r: VecDeque::from(vec![0.0; 4410]),
         }
     }
 }
@@ -98,7 +131,7 @@ impl Default for EffectParameters {
         EffectParameters {
             pre_gain: AtomicFloat::new(0.5),    // map -60 dB - +18 dB   c: 0 dB
             drive: AtomicFloat::new(0.0),       // map 0.1 - 5.0
-            bias: AtomicFloat::new(0.0),        // map -1 - +1
+            bias: AtomicFloat::new(0.5),        // map -1 - +1
             bias_mode: AtomicFloat::new(0.0),   // map enum{tape, tube}
             cross_amt: AtomicFloat::new(0.0),
             cross_width: AtomicFloat::new(0.0),
@@ -153,175 +186,169 @@ impl Plugin for Effect {
 
         // process
         for ((left_in, right_in), (left_out, right_out)) in stereo_in.zip(stereo_out) {
-
-            // === get all params ==============================================
-            let pre_gain = self.params.pre_gain.get().powf(3.0)*8.0;
-            let drive = self.params.drive.get()*4.9 + 0.1;
-            let bias = self.params.bias.get()*2.0 - 1.0;
-            let bias_mode = if self.params.bias_mode.get() < 0.5 {
-                BiasMode::TAPE
-            } else {
-                BiasMode::TUBE
-            };
-            let cross_amt = self.params.cross_amt.get();
-            let cross_width = self.params.cross_width.get();
-            let cross_mode = if self.params.cross_mode.get() < 0.5 {
-                CrossMode::DIGITAL
-            } else {
-                CrossMode::ANALOG
-            };
-            let hyst_amt = self.params.hyst_amt.get().powf(3.0);
-            let hyst_param = self.params.hyst_param.get();
-            let hyst_mode = match self.params.hyst_mode.get() {
-                0.0..=0.25 => HystMode::DIGITAL,
-                0.25..=0.5 => HystMode::TAPE1,
-                0.5..=0.75 => HystMode::TAPE2,
-                _ => HystMode::TUBE
-            };
             let quantum = self.params.quantum.get();
-            let sat_mode = match self.params.sat_mode.get() {
-                0.0..=0.25 => SatMode::TAPE1,
-                0.25..=0.5 => SatMode::TAPE2,
-                0.5..=0.75 => SatMode::CLIP,
-                _ => SatMode::TUBE
-            };
-            let dry_wet = self.params.dry_wet.get();
-            let cut = self.params.cut.get().sqrt().sqrt();
-            let post_gain = self.params.post_gain.get()*2.0;
+            //let xo_amt = self.params.cross_amt.get().sqrt().sqrt().sqrt().sqrt().sqrt().sqrt().sqrt().sqrt();
+            let erase = (1.0 - self.params.cross_amt.get()*0.999).powf(2.0);
+            let xo_w = self.params.cross_width.get().powf(3.0);
+            let bias = self.params.bias.get()*2.0 - 1.0;
+            let drive = (5.0*self.params.drive.get().powf(2.0)).exp()*0.5;
+            let pre_gain = self.params.pre_gain.get()*2.0;    // TODO: re-scale
+            let post_gain = self.params.post_gain.get()*2.0;  // TODO: re-scale
+            let wow = self.params.bias_mode.get().powf(2.0);
+            let flut_amt = self.params.hyst_amt.get().powf(2.0);
+            let hiss = self.params.cross_mode.get().powf(3.0);
 
-            // === pre-gain and drive ==========================================
-            let dry_l = *left_in*pre_gain;
-            let dry_r = *right_in*pre_gain;
-            let mut xl = dry_l*drive;
-            let mut xr = dry_r*drive;
 
-            // === crossover ===================================================
-            match cross_mode {
-                CrossMode::DIGITAL => {
-                    xl = compute::digital_xover(xl, cross_amt, cross_width);
-                    xr = compute::digital_xover(xr, cross_amt, cross_width);
-                },
-                CrossMode::ANALOG => {
-                    xl = compute::analog_xover(xl, cross_amt, cross_width);
-                    xr = compute::analog_xover(xr, cross_amt, cross_width);
-                }
-            }
+            // === pre-gain
+            let mut xl = *left_in*pre_gain + bias;
+            let mut xr = *right_in*pre_gain + bias;
+
+            // === recording noise =============================================
+            let mut rec_nse_l = (self.rng.next_u64() as f32) / (u64::MAX as f32);
+            let mut rec_nse_r = (self.rng.next_u64() as f32) / (u64::MAX as f32);
+            // blue-noisify
+            rec_nse_l -= self.rec_nse_l_z1*0.5;
+            rec_nse_r -= self.rec_nse_r_z1*0.5;
+            self.rec_nse_l_z1 = rec_nse_l;
+            self.rec_nse_r_z1 = rec_nse_r;
+            xl += rec_nse_l*hiss*0.01;
+            xr += rec_nse_r*hiss*0.01;
 
             // === hysteresis ==================================================
-            // HACK: legacy functionality implemented by returning tape 2 in the
-            // first half of the tuple
-            let (w_p_l, w_m_l) = match hyst_mode {
-                HystMode::DIGITAL => compute::digital_window(xl, hyst_amt, hyst_param),
-                HystMode::TAPE1 => compute::tape_window_1(xl, hyst_amt, hyst_param),
-                HystMode::TAPE2 => (compute::tape_window_2(xl, hyst_amt, hyst_param, 
-                    compute::diff(xl, self.xl_p, self.rate)), 0.0),
-                HystMode::TUBE => compute::tube_window(xl, hyst_amt, hyst_param),
-                _ => (0.0, 0.0)
-            };
-            let (w_p_r, w_m_r) = match hyst_mode {
-                HystMode::DIGITAL => compute::digital_window(xr, hyst_amt, hyst_param),
-                HystMode::TAPE1 => compute::tape_window_1(xr, hyst_amt, hyst_param),
-                HystMode::TAPE2 => (compute::tape_window_2(xr, hyst_amt, hyst_param, 
-                    compute::diff(xr, self.xr_p, self.rate)), 0.0),
-                HystMode::TUBE => compute::tube_window(xr, hyst_amt, hyst_param),
-                _ => (0.0, 0.0)
-            };
-
-            // treat legacy mode separately
-            match hyst_mode{
-                HystMode::TAPE2 => {
-                    xl = w_p_l;
-                    xr = w_p_r;
-                },
-                _ => {
-                    // differentiate window functions
-                    let d_w_p_l = w_p_l - self.w_p_l_p;
-                    let d_w_m_l = w_m_l - self.w_m_l_p;
-                    let d_w_p_r = w_p_r - self.w_p_r_p;
-                    let d_w_m_r = w_m_r - self.w_m_r_p;
-                    self.w_p_l_p = w_p_l;
-                    self.w_m_l_p = w_m_l;
-                    self.w_p_r_p = w_p_r;
-                    self.w_m_r_p = w_m_r;
-
-                    // differentiate input
-                    let d_xl = xl - self.xl_p;
-                    let d_xr = xr - self.xr_p;
-                    self.xl_p = xl;
-                    self.xr_p = xr;
-
-                    // transfer window delta to x delta
-                    let hyst_l: f32;
-                    let hyst_r: f32;
-                    if d_xl > 0.0{
-                        hyst_l = self.hyst_l_p + d_w_p_l;
-                    } else {
-                        hyst_l = self.hyst_l_p + d_w_m_l;
-                    }
-                    if d_xr > 0.0{
-                        hyst_r = self.hyst_l_p + d_w_p_r;
-                    } else {
-                        hyst_r = self.hyst_r_p + d_w_m_r;
-                    }
-                    self.hyst_l_p = hyst_l;
-                    self.hyst_r_p = hyst_r;
-
-                    xl = hyst_l;
-                    xr = hyst_r;
-                }
-            }
+            xl = self.xl_h_z1 + compute::analog_xover(xl - self.xl_h_z1, 0.99975, xo_w);
+            xr = self.xr_h_z1 + compute::analog_xover(xr - self.xr_h_z1, 0.99975, xo_w);
+            self.xl_h_z1 = xl;
+            self.xr_h_z1 = xr;
 
             // === stochastic quantization =====================================
-            xl = compute::x_quant(xl, self.xl_p, self.rate, quantum, &mut self.rng);
-            xr = compute::x_quant(xr, self.xr_p, self.rate, quantum, &mut self.rng);
+            xl = compute::x_quant(xl, self.xl_q_z1, self.rate, quantum, &mut self.rng);
+            xr = compute::x_quant(xr, self.xr_q_z1, self.rate, quantum, &mut self.rng);
+            self.xl_q_z1 = xl;
+            self.xr_q_z1 = xr;
 
             // === saturation ==================================================
-            let mut anti_drive: f32 = 0.0;  // saturate the drive input to scale 
-                                            // the output back to unity gain
-            match sat_mode{
-                SatMode::TAPE1 => { 
-                    xl = compute::tape_sat_1(xl); 
-                    xr = compute::tape_sat_1(xr);
-                    anti_drive = 1.0/compute::tape_sat_1(drive);
-                },
-                SatMode::TAPE2 => {
-                    xl = compute::tape_sat_2(xl); 
-                    xr = compute::tape_sat_2(xr);
-                    anti_drive = 1.0/compute::tape_sat_2(drive);
-                },
-                SatMode::TUBE => {
-                    xl = compute::tube_sat(xl); 
-                    xr = compute::tube_sat(xr);
-                    anti_drive = 1.0/compute::tube_sat(drive);
-                },
-                SatMode::CLIP => {
-                    xl = compute::soft_clip(xl); 
-                    xr = compute::soft_clip(xr);
-                    anti_drive = 1.0/compute::soft_clip(drive);
-                },
-                _ => ()
-            }
+            xl = compute::mag_sat_4(xl*drive)/compute::mag_sat_4(drive) - compute::mag_sat_4(bias*drive)/compute::mag_sat_4(drive);
+            xr = compute::mag_sat_4(xr*drive)/compute::mag_sat_4(drive) - compute::mag_sat_4(bias*drive)/compute::mag_sat_4(drive);
 
-            // === anti-drive ==================================================
-            xl *= anti_drive;
-            xr *= anti_drive;
+            // TODO: voltage-drop compression (planned ver 0.3)
 
-            // === dry / wet ===================================================
-            xl = xl*dry_wet + dry_l*(1.0 - dry_wet);
-            xr = xr*dry_wet + dry_r*(1.0 - dry_wet);
+            // === grain noise =================================================
+            // emulates the grainy noise generated by the metallic powder grains
+            // being of finite resolution, this is not the same as stochastic
+            // quantization, which is the noise added by the quantum magnetization
+            // steps
+            let grain = ((self.rng.next_u64() as f32) / (u64::MAX as f32)).powf(18.0);
+            xl += grain*hiss*0.33;
+            xr += grain*hiss*0.33;
 
-            // === post-eq =====================================================
-            xl = compute::play(xl, self.yl_p, cut);
-            xr = compute::play(xr, self.yr_p, cut);
-            self.yl_p = xl;
-            self.yr_p = xr;
 
-            // === post gain ===================================================
-            let yl = xl*post_gain;
-            let yr = xr*post_gain;
+            // === wow / flutter ===============================================
+            // modulating oscillator, used to vary the speed of the two other
+            // oscillators. A phasor ramp is generated, it is wrapped between
+            // 0 and TAU radians. Then a sine wave is produced by taking the sin
+            // of the phasor. The same applies for all other oscillators.
+            self.ramp_mod = if self.ramp_mod > std::f32::consts::TAU {
+                0.0
+            } else {
+                self.ramp_mod + consts::TAU*(MOD_RATE/self.sr)
+            };
+            let sine_mod = self.ramp_mod.sin()*0.5 + 0.5;   // make positive
 
-            *left_out = yl;
-            *right_out = yr;
+            // osc 1
+            // frequency of osc 1 varies between 0 Hz and 0.9 Hz
+            let rate_1 = 0.9*sine_mod;
+            self.ramp_1 = if self.ramp_1 > std::f32::consts::TAU {
+                0.0
+            } else {
+                self.ramp_1 + consts::TAU*(rate_1/self.sr)
+            };
+            let sine_1 = self.ramp_1.sin()*0.1;
+
+            // osc 2
+            // frequency of osc 2 varies between 0.35 Hz and 1.35 Hz
+            let rate_2 = 1.0*(1.0 - sine_mod) + 0.35;
+            self.ramp_2 = if self.ramp_2 > std::f32::consts::TAU {
+                0.0
+            } else {
+                self.ramp_2 + consts::TAU*(rate_2/self.sr)
+            };
+            let sine_2 = self.ramp_2.sin()*0.1;
+
+            // flutter
+            // filtered with a second order lowpass filter at 35 Hz in series with
+            // a high pass filter at 8 Hz
+            // and in parallel with a high pass filter at 500 Hz
+            let omega_1 = (-consts::TAU*(LP_1_CUT/self.sr)).exp();
+            let omega_2 = (-consts::TAU*(HP_1_CUT/self.sr)).exp();
+            let omega_3 = (-consts::TAU*(HP_2_CUT/self.sr)).exp();
+            let mut flutter = (self.rng.next_u64() as f32) / (u64::MAX as f32);
+            // LP at 35 Hz
+            let flutter_lp = (1.0 - omega_1).powf(2.0)*flutter + 2.0*omega_1*self.lp_1_z1 - omega_1.powf(2.0)*self.lp_1_z2;
+            // HP at 8 Hz
+            let flutter_hp_1 = (1.0 + omega_2)/2.0*flutter_lp - (1.0 + omega_2)/2.0*self.lp_1_z1 + omega_2*self.hp_1_z1;
+            // HP at 500 Hz
+            let flutter_hp_2 = (1.0 + omega_3)/2.0*flutter - (1.0 + omega_3)/2.0*self.flut_z1 + omega_3*self.hp_2_z1;
+            self.lp_1_z2 = self.lp_1_z1;
+            self.lp_1_z1 = flutter_lp;
+            self.flut_z1 = flutter;
+            self.hp_1_z1 = flutter_hp_1;
+            self.hp_2_z1 = flutter_hp_2;
+            flutter = flutter_hp_1*16.0 + flutter_hp_2*0.00; // FIXME: maybe add hp 2 after intersample interpolation is introduced
+            flutter = flutter*flutter*flutter;
+
+
+
+            // add together mod sources (mod is a reserved keyword)
+            let my_mod = 1.0 + (sine_1 + sine_2)*wow + flutter*flut_amt;
+
+            // TODO: add option to bypass time effects to remove latency
+            self.dly_line_l.push_back(xl);
+            self.dly_line_r.push_back(xr);
+            self.dly_line_l.pop_front();
+            self.dly_line_r.pop_front();
+            // TODO: proper intersample interpolation (planned ver 0.3)
+            // take the integer approximation of playback position and the
+            // real value remainder between integer approx and next sample
+            let read_idx = 2205.0*my_mod;
+            let read_idx_i = read_idx.floor() as usize;
+            let read_idx_r =read_idx - (read_idx_i as f32);
+            let xl_1 = *self.dly_line_l.get(read_idx_i).unwrap();
+            let xr_1 = *self.dly_line_r.get(read_idx_i).unwrap();
+            let xl_2 = *self.dly_line_l.get(read_idx_i + 1).unwrap();
+            let xr_2 = *self.dly_line_r.get(read_idx_i + 1).unwrap();
+            // use remainder of index to crossfade between adjacent samples
+            xl = xl_1*(1.0 - read_idx_r) + xl_2*read_idx_r;
+            xr = xr_1*(1.0 - read_idx_r) + xr_2*read_idx_r;
+
+            // === self-erasure ================================================
+            xl = self.xl_e_z1 + ((xl - self.xl_e_z1)/erase).tanh()*erase;
+            xr = self.xr_e_z1 + ((xr - self.xr_e_z1)/erase).tanh()*erase;
+            self.xl_e_z1 = xl;
+            self.xr_e_z1 = xr;
+
+            // === recording noise =============================================
+            let mut play_nse_l = (self.rng.next_u64() as f32) / (u64::MAX as f32);
+            let mut play_nse_r = (self.rng.next_u64() as f32) / (u64::MAX as f32);
+            // blue-noisify
+            play_nse_l -= self.play_nse_l_z1*0.5;
+            play_nse_r -= self.play_nse_r_z1*0.5;
+            self.play_nse_l_z1 = play_nse_l;
+            self.play_nse_r_z1 = play_nse_r;
+            xl += play_nse_l*hiss*0.03;
+            xr += play_nse_r*hiss*0.03;
+
+            // === dc-decouple =================================================
+            // essentially just a high pass filter at 5Hz
+            xl = xl - self.yl_z1*0.25;
+            xr = xr - self.yr_z1*0.25;
+            self.yl_z1 = xl;
+            self.yr_z1 = xr;
+
+            *left_out = xl*post_gain;
+            *right_out = xr*post_gain;
+
+            // === dropouts ====================================================
+            // TODO: (planned ver 0.3)
         }
     }
 

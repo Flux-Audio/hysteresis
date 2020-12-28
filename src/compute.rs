@@ -2,6 +2,7 @@ extern crate rand_xoshiro;
 
 use rand_xoshiro::Xoshiro256Plus;
 use rand_xoshiro::rand_core::RngCore;
+use std::f32::consts;
 
 /// simple RT derivative approximation
 pub fn diff(x: f32, x_p: f32, rate:f32) -> f32{ return (x - x_p)/rate; }
@@ -22,6 +23,7 @@ pub fn tube_bias(x: f32, bias: f32) -> f32{
 /// + amt   amount
 /// + w     width
 pub fn digital_xover(x: f32, amt: f32, w: f32) -> f32{
+    // TODO: it don't work
     return x - (if x.abs() < w { 
         x/(amt.atanh() + 1.0) 
     } else {
@@ -50,92 +52,24 @@ pub fn analog_xover(x: f32, amt: f32, w: f32) -> f32{
 }
 
 
-// === HYSTERESIS WINDOW FUNCTION ==============================================
-
-/// digital hysteresis
-/// + x     input
-/// + amt   amount
-/// + w     width
-pub fn digital_window(x: f32, amt: f32, w: f32) -> (f32, f32){
-    // prepare
-    let lim = |x: f32| -> f32 { if x.abs() > 1.0 { x.signum() } else { x }};
-
-    // hysteresis
-    let w_p = lim(x + w)*amt + x*(1.0 - amt);
-    let w_m = lim(x - w)*amt + x*(1.0 - amt);
-    return (w_p, w_m);
-}
-
-/// tape hysteresis 1
-/// + x     input
-/// + amt   amount
-/// + asym  asymmetry
-pub fn tape_window_1(x: f32, amt: f32, asym: f32) -> (f32, f32){
-    // prepare
-    let amt_p = (amt*asym*2.0).tanh();
-    let amt_m = (amt*(1.0 - asym)*2.0).tanh();
-
-    // hysteresis
-    let w_p = (2.82842712*(x + 1.0).sqrt() - 2.0 - x)*amt_p + x*(1.0 - amt_p);
-    let w_m = (2.0 - x - 2.82842712*(1.0 - x).sqrt())*amt_m + x*(1.0 - amt_m);
-    return (w_p, w_m);
-}
-
-/// tape hysteresis 2 ( legacy )
-/// + x     input
-/// + amt   amount
-/// + w     width
-/// + dx    delta x
-pub fn tape_window_2(x: f32, amt: f32, w: f32, dx: f32) -> f32{
-    let _x = 1.0/w*x; // change width of hyp-secant by making the input steeper
-    let x_2 = _x*_x;    // pre-compute square of x
-    let sech = 24.0/((x_2 + 12.0)*x_2 + 24.0);
-    return sech*(w/100.0)*amt*dx;    // scale output for smoother hysteresis
-}
-
-/// tube hysteresis
-/// + x     input
-/// + amt   amount
-/// + asym  asymmetry
-pub fn tube_window(x: f32, amt: f32, asym: f32) -> (f32, f32){
-    let w_p = x - 0.5/(1.0 + 25.0*(x - asym).powf(2.0))*amt;
-    let w_m = x + 0.5/(1.0 + 25.0*(-x - asym).powf(2.0))*amt;
-    return (w_p, w_m);
-} 
-
+// === HYSTERESIS ==============================================================
 
 // === SATURATION FUNCTION =====================================================
 
-/// tape saturation 1
-pub fn tape_sat_1(x: f32) -> f32{
-    let sat_1 = if x < -1.4 {
-        0.169967143*(x + 1.4) - 0.98544972998
-    } else if x > 1.4 {
-        0.169967143*(x - 1.4) + 0.98544972998
-    } else {
-        x.sin()
-    };
-    return (sat_1*0.8).tanh();
-}
+/// tungsten magnetic saturation
+pub fn mag_sat_1 (x: f32) -> f32 { (x*x*x*1.6 + x*0.4).tanh() }
 
-/// tape saturation 2 ( legacy )
-pub fn tape_sat_2(x: f32) -> f32{
-    let x_2 = x*x;  // pre-compute square of x
-    return x/(1.0+x_2/(3.0+x_2/(5.0+x_2/(7.0+x_2/13.0))));
-}
+/// steel magnetic saturation
+pub fn mag_sat_2 (x: f32) -> f32 { (x*x*x*3.0 + x*0.75).atan()*consts::FRAC_2_PI }
 
-/// soft clip (transformer saturation)
-pub fn soft_clip(x: f32) -> f32{
-    return 0.2*((1.0 + (10.0*x + 5.0).exp())/(1.0 + (10.0*x - 5.0).exp())).ln() - 1.0;
-}
+/// iron magnetic saturation
+pub fn mag_sat_3 (x: f32) -> f32 { (x*1.6).atan()*consts::FRAC_2_PI }
 
-/// tube saturation
-pub fn tube_sat(x: f32) -> f32{
-    let tg = (1.4549654*x).tan()/4.0;
-    let sat = (1.4549654*x).tanh();
-    let fade = if x.abs() > 1.28741055 { 1.0 } else { 1.0/1.28741055*x.abs() };
-    return tg*(fade - 1.0) + sat*fade;
-}
+/// nickel magnetic saturation
+pub fn mag_sat_4 (x: f32) -> f32 { x.tanh() }
+
+/// magnetite magnetic saturation
+pub fn mag_sat_5 (x: f32) -> f32 { (3.0*x.powf(1.8)).atan()*consts::FRAC_2_PI }
 
 
 // === QUANTIZATION FUNCTION ===================================================
