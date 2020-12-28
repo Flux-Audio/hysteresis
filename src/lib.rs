@@ -323,8 +323,8 @@ impl Plugin for Effect {
             self.flut_z1 = flutter;
             self.hp_1_z1 = flutter_hp_1;
             self.hp_2_z1 = flutter_hp_2;
-            flutter = flutter_hp_1*16.0 + flutter_hp_2*0.00; // FIXME: maybe add hp 2 after intersample interpolation is introduced
-            flutter = flutter*flutter*flutter;
+            flutter = flutter_hp_1*16.0;
+            flutter = flutter*flutter*flutter + flutter_hp_2*0.001;
 
             // add together mod sources (mod is a reserved keyword)
             let my_mod = 1.0 + (sine_1 + sine_2)*wow + flutter*flut_amt;
@@ -334,9 +334,7 @@ impl Plugin for Effect {
             self.dly_line_r.push_back(xr);
             self.dly_line_l.pop_front();
             self.dly_line_r.pop_front();
-            // TODO: proper intersample interpolation (planned ver 0.3)
-            // take the integer approximation of playback position and the
-            // real value remainder between integer approx and next sample
+            
             let read_idx = 2205.0*my_mod;
             let read_idx_i = read_idx.floor() as usize;
             let read_idx_r =read_idx - (read_idx_i as f32);
