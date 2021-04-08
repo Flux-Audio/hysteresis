@@ -1,3 +1,10 @@
+# !!! Major Changes Ahead !!!
+HYSTERESIS has a lot of things going on in the background that I would love to explore, but the risk is making a massively complicated 
+user interface, instead, it will be split up into multiple other plugins:
+- HYSTERESIS: will only encompass the tape distortion and equalization aspects, so it can be used efficiently as a mastering plugin
+- ???: will be a vibey tape artifact machine, doing wow, flutter, scrape flutter and dropouts, mostly for chorus
+- ???: will be some plugin unrelated to tape emulation, which just implements stochastic quantization and some other chaotic shenanigans.
+
 # Hysteresis v0.2.0
 
 ## <strong><span style="color:crimson">Update Notice</span></strong>
