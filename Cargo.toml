@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 vst = "0.2.1"
 rand_xoshiro = "0.4.0"
+rust_dsp_utils = {git="https://github.com/Flux-Audio/rust-dsp-utils.git"}
 
 [lib]
 name = "HYSTERESIS"

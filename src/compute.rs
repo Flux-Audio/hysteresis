@@ -4,6 +4,9 @@ use rand_xoshiro::Xoshiro256Plus;
 use rand_xoshiro::rand_core::RngCore;
 use std::f32::consts;
 
+use rust_dsp_utils::effects::filter::{Integrator};
+use rust_dsp_utils::utils::chaos::{Rng};
+
 /// simple RT derivative approximation
 pub fn diff(x: f32, x_p: f32, rate:f32) -> f32{ return (x - x_p)/rate; }
 
@@ -53,6 +56,14 @@ pub fn analog_xover(x: f32, amt: f32, w: f32) -> f32{
 
 
 // === HYSTERESIS ==============================================================
+pub struct Hysteresis {
+    int: Integrator,
+    rng: Rng,
+}
+
+impl Hysteresis {
+    
+}
 
 // === SATURATION FUNCTION =====================================================
 /// soft saturation
