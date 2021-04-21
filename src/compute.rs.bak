@@ -1,0 +1,30 @@
+extern crate rand_xoshiro;
+
+use rand_xoshiro::Xoshiro256Plus;
+use rand_xoshiro::rand_core::RngCore;
+use std::f32::consts;
+
+use rust_dsp_utils::effects::filter::{Integrator};
+use rust_dsp_utils::utils::chaos::{Rng};
+
+
+// === QUANTIZATION FUNCTION ===================================================
+
+// TODO: move this to dsp_lab
+/// stochastic quantization
+///     simulates quantum nature of magnetic tape magnetization
+/// + x:    input
+/// + y_p:  previous output
+/// + T:    intersample period
+/// + q:    quantization amount
+/// + rng:  reference to random number generator
+pub fn x_quant(x: f32, x_p: f32, T: f32, 
+                q: f32, rng: &mut Xoshiro256Plus) -> f32{
+    let dx = diff(x, x_p, T);
+    let _dx = dx.abs();
+    let r = (rng.next_u64() as f32) / (u64::MAX as f32);
+    if r < (_dx*(1.0 - q).powf(T*44100.0*8.0)){
+        return x;
+    }
+    return x_p;
+}
