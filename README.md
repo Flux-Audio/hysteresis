@@ -1,8 +1,23 @@
-# Hysteresis v0.2.0
+# Hysteresis v0.3.0
 
 ## <strong><span style="color:crimson">Update Notice</span></strong>
-Version v0.2.0 is incompatible with v0.1.0! Presets cannot be ported. Make sure to
-backup any old instances of v0.1.0 if you don't want your projects to break.
+Version v0.3.x is incompatible with v0.2.x! Presets cannot be ported. Make sure to
+backup any old instances of v0.2.x if you don't want your projects to break.
+
+The wow and flutter effects have been moved to a new plugin called MOD_BOX. Stochastic
+quantization effect has been moved to a new plugin called STOCHASTICJ.
+
+MOD_BOX has these features:
+- Wow
+- Flutter
+- Modulation speed
+- Dry/wet for chorus effects.
+
+STOCHASTIC has these features:
+- Quantization amount: slows down the rate of the quantization (makes more lo-fi).
+- Quantization regularity: changes between probabilistic to deterministic quantization.
+- Quantization periodicity: changes between quantization based on rate of change and periodic quantization.
+- Mode: quantize vs geiger counter: in geiger counter mode, the trigger pulses are output instead. 
 
 A full changelist is at the bottom of this document.
 
