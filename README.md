@@ -73,3 +73,8 @@ The vast majority of the plugin was re-designed.
 - Modified: Pre and post-gain faders have been re-scaled and are now showing their values in decibels.
 - Removed: post-EQ, now a similar effect can be obtained with erase.
 - Removed: hysteresis width. The new hysteresis algorithm does not support this.
+
+# Known Bugs
++ When copying and pasting / duplicating the plugin, the copied plugin will not be initialized correctly by the DAW, or might crash the DAW in certain cases. This also applies 
+when copying the plugin indirectly by copying the channel/track the plugin is inside of.
++ On low pre-gain, 32-bit floating point quantization creates small but noticeable artifacts.
