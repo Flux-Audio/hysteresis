@@ -71,7 +71,7 @@ impl Plugin for Effect {
             name: "HYSTERESIS".to_string(),
             vendor: "Rust DSP".to_string(),
             unique_id: 0x2d4e04e1,  // adler-32 of name + version (HYSTERESIS v0.3.x)
-            version: 30,
+            version: 31,
             inputs: 2,
             outputs: 2,
             // This `parameters` bit is important; without it, none of our
@@ -106,16 +106,16 @@ impl Plugin for Effect {
         for ((left_in, right_in), (left_out, right_out)) in stereo_in.zip(stereo_out) {
 
             // get params
-            let sq = self.params.dbg_sq.get();
-            let c  = self.params.dbg_coerc.get();
-            let pre_post = self.params.pre_post.get() * 24.0 - 12.0;
+            let sq = self.params.dbg_sq.get() as f64;
+            let c  = self.params.dbg_coerc.get() as f64;
+            let pre_post = self.params.pre_post.get() as f64 * 24.0 - 12.0;
             let pre  = db_to_gain( pre_post);
             let post = db_to_gain(-pre_post);
-            let dry_wet = self.params.dry_wet.get();
+            let dry_wet = self.params.dry_wet.get() as f64;
 
             // get inputs
-            let mut xl = *left_in * pre;
-            let mut xr = *right_in * pre;
+            let mut xl = *left_in as f64 * pre;
+            let mut xr = *right_in as f64 * pre;
 
             // update process parameters
             self.hyst_l.sq = sq;
@@ -128,8 +128,8 @@ impl Plugin for Effect {
             xr = self.hyst_r.step(xr);
 
             // === out =========================================================
-            *left_out  = x_fade(*left_in,  dry_wet, xl * post);
-            *right_out = x_fade(*right_in, dry_wet, xr * post);
+            *left_out  = x_fade(*left_in  as f64, dry_wet, xl * post) as f32;
+            *right_out = x_fade(*right_in as f64, dry_wet, xr * post) as f32;
         }
     }
 
