@@ -1,4 +1,4 @@
-- [Hysteresis v0.3.0](#hysteresis-v030)
+- [Hysteresis v0.3.1](#hysteresis-v031)
   * [Update Notice](#update-notice)
   * [Installation](#installation)
   * [Compiling The Source Code](#compiling-the-source-code)
@@ -9,7 +9,7 @@
   * [v0.2.0](#v020)
 - [Known Bugs](#known-bugs)
 
-# Hysteresis v0.3.0
+# Hysteresis v0.3.1
 ***Categories:** meta-plugin, circuit modelling*
 
 ## Update Notice
@@ -68,6 +68,9 @@ quite a bit.
 
 # Changelist
 
+## v0.3.1
++ Fixed: considerable 32-bit float quantization noise (up to -7 dB!). Now all
+audio processing is in 64-bit float, which uses a bit more CPU.
 ## v0.3.0
 The plugin is completely redesigned from the ground up, and has lost
 most of its original functionality, as it has been simplified.
@@ -89,4 +92,3 @@ The vast majority of the plugin was re-designed.
 For a detailed list, see the [issues](https://github.com/Flux-Audio/hysteresis/issues) tab.
 + When copying and pasting / duplicating the plugin, the copied plugin will not be initialized correctly by the DAW, or might crash the DAW in certain cases. This also applies 
 when copying the plugin indirectly by copying the channel/track the plugin is inside of.
-+ On low pre-gain, 32-bit floating point quantization creates small but noticeable artifacts.

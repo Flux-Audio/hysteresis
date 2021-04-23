@@ -1,6 +1,6 @@
 [package]
-name = "HYSTERESIS_v0_3_0"
-version = "0.3.0"
+name = "HYSTERESIS_v0_3_1"
+version = "0.3.1"
 authors = ["Lorenzo Panieri <panierilorenzo@gmail.com>"]
 edition = "2018"
 
@@ -13,7 +13,7 @@ rust_dsp_utils = {git="https://github.com/Flux-Audio/rust-dsp-utils.git"}
 dsp_lab = {git="https://github.com/Flux-Audio/dsp_lab.git"}
 
 [lib]
-name = "HYSTERESIS_v0_3_0"
+name = "HYSTERESIS_v0_3_1"
 crate-type = ["cdylib"]
 
 [profile.release]
